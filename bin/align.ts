@@ -388,27 +388,36 @@ async function status(): Promise<void> {
   printStatus(await api<Snapshot>('GET', '/api/state'));
 }
 
+/** Prints every coordination event once, including those that happened before it connected or while it was reconnecting. */
 async function watch(): Promise<void> {
   let seen = 0;
+  let announced = false;
+  let down = false;
   const connect = () => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    ws.on('open', () => {
+      if (down) console.log(dim(`${time(Date.now())}  reconnected`));
+      down = false;
+    });
     ws.on('message', raw => {
       const event = JSON.parse(String(raw));
       if (event.type !== 'snapshot') return;
       const snapshot = event.data as Snapshot;
-      const fresh = snapshot.activity.filter(a => a.id > seen).sort((a, b) => a.id - b.id);
-      if (seen === 0 && fresh.length) {
-        seen = fresh[fresh.length - 1]!.id;
+      if (!announced) {
+        announced = true;
         console.log(dim(`${time(Date.now())}  watching ${snapshot.project?.name ?? ''} · ${snapshot.sessions.map(s => s.handle).join(', ')}`));
-        return;
       }
-      for (const a of fresh) {
-        seen = Math.max(seen, a.id);
+      for (const a of snapshot.activity.filter(a => a.id > seen).sort((a, b) => a.id - b.id)) {
+        seen = a.id;
         const line = describe(snapshot, a);
         if (line) console.log(`${dim(time(a.createdAt))}  ${line}`);
       }
     });
-    ws.on('close', () => setTimeout(connect, 1500));
+    ws.on('close', () => {
+      if (!down && announced) console.log(dim(`${time(Date.now())}  connection to Align lost, retrying`));
+      down = true;
+      setTimeout(connect, 1500);
+    });
     ws.on('error', () => {});
   };
   connect();
