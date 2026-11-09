@@ -157,7 +157,7 @@ interface JoinResult {
 
 async function join(args: string[]): Promise<JoinResult> {
   const {opts} = flags(args);
-  if (!opts.name || !opts.agent || !opts.task) fail('usage: align join --name <developer> --agent claude|codex --task "<title>" [--role <role>] [--description <text> | --brief <file>]');
+  if (!opts.name || !opts.agent) fail('usage: align join --name <developer> --agent claude|codex [--task "<title>"] [--role <role>] [--description <text> | --brief <file>]');
   const description = opts.brief ? readFileSync(opts.brief, 'utf8') : (opts.description ?? '');
   const result = await api<JoinResult>('POST', '/api/join', {developer: opts.name, agent: opts.agent, task: opts.task, role: opts.role ?? '', description});
   console.log(`${agentMark(opts.agent)} ${bold(result.handle)} ${result.taskId}  ${dim(result.worktreePath)}`);
@@ -185,7 +185,12 @@ function claudeExe(): string {
   return existsSync(local) ? local : 'claude';
 }
 
-// Set with ALIGN_LANGUAGE; keep it free of double quotes (it is passed as a TOML string to Codex).
+/** A TOML basic string, for passing text through Codex's `-c key=value`. */
+function tomlString(text: string): string {
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n').replace(/\t/g, '\\t')}"`;
+}
+
+// Set with ALIGN_LANGUAGE.
 const LANGUAGE_RULE = `Always reply to your developer in ${process.env.ALIGN_LANGUAGE || 'English'}, even when they write in another language. Write align messages, shared memory and commit messages in ${process.env.ALIGN_LANGUAGE || 'English'} too.`;
 
 const KICKOFF ='Read .align/BRIEF.md and do your task, following its collaboration protocol. Start by calling align.sync.';
@@ -200,6 +205,9 @@ async function run(args: string[]): Promise<void> {
   const info = JSON.parse(readFileSync(path.join(dir, '.align', 'session.json'), 'utf8')) as {mcpUrl: string};
   // --idle opens the agent without a first prompt, so the developer starts it.
   const prompt = opts.idle === 'true' ? null : (opts.prompt ?? KICKOFF);
+  // The brief rides in the agent's system instructions, so the developer can simply start talking.
+  const brief = existsSync(path.join(dir, '.align', 'BRIEF.md')) ? readFileSync(path.join(dir, '.align', 'BRIEF.md'), 'utf8') : '';
+  const instructions = `${LANGUAGE_RULE}\n\nYou are connected to Align, a coordination layer shared with another developer's coding agent. Follow this brief (also at .align/BRIEF.md):\n\n${brief}`;
 
   let exe: string;
   let argv: string[];
@@ -213,7 +221,7 @@ async function run(args: string[]): Promise<void> {
       '--no-chrome',
       '--allowedTools', 'mcp__align', 'Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'Read', 'Glob', 'Grep',
       '-n', handle,
-      '--append-system-prompt', LANGUAGE_RULE,
+      '--append-system-prompt', instructions,
       ...(opts.model ? ['--model', opts.model] : []),
       ...(prompt ? [prompt] : []),
     ];
@@ -228,7 +236,7 @@ async function run(args: string[]): Promise<void> {
       '-c', 'mcp_servers.align.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.align.tool_timeout_sec=300',
       '-c', 'check_for_update_on_startup=false',
-      '-c', `developer_instructions="${LANGUAGE_RULE}"`,
+      '-c', `developer_instructions=${tomlString(instructions)}`,
       ...(opts.model ? ['-m', opts.model] : []),
       ...(prompt ? [prompt] : []),
     ];
@@ -426,7 +434,7 @@ async function watch(): Promise<void> {
 async function demo(args: string[]): Promise<void> {
   const {opts} = flags(args);
   const scenario = opts.scenario ?? 'editor';
-  const template = scenario === 'game' || scenario === 'flappy' ? scenario : 'taskboard';
+  const template = scenario === 'game' || scenario === 'flappy' || scenario === 'blank' ? scenario : 'taskboard';
   const target = path.resolve(opts.dir ?? path.join(homedir(), 'align-demo', template));
   if (existsSync(target)) {
     if (opts.reset !== 'true') fail(`${target} exists; pass --reset to recreate it`);
@@ -451,9 +459,11 @@ async function demo(args: string[]): Promise<void> {
   };
   const roles: Record<string, [string, string]> = {game: ['Game architect', 'Game designer'], flappy: ['Game developer', 'Game designer']};
   const [frontRole, backRole] = roles[scenario] ?? ['Frontend developer', 'Backend developer'];
-  const [frontTask, backTask] = titles[scenario] ?? fail(`unknown scenario ${scenario}`);
-  const a = await join(['--name', opts.a ?? 'James', '--agent', 'claude', '--role', frontRole, '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')]);
-  const b = await join(['--name', opts.b ?? 'Bumsoo', '--agent', 'codex', '--role', backRole, '--task', backTask, '--brief', path.join(briefs, 'backend.md')]);
+  // `blank`: no task and no brief; the developers say what to build once recording starts.
+  const blank = scenario === 'blank';
+  const [frontTask, backTask] = blank ? ['', ''] : (titles[scenario] ?? fail(`unknown scenario ${scenario}`));
+  const a = await join(['--name', opts.a ?? 'James', '--agent', 'claude', ...(blank ? [] : ['--role', frontRole, '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')])]);
+  const b = await join(['--name', opts.b ?? 'Bumsoo', '--agent', 'codex', ...(blank ? [] : ['--role', backRole, '--task', backTask, '--brief', path.join(briefs, 'backend.md')])]);
   if (opts.launch !== 'false') await launch([a.handle, b.handle, ...(opts.idle === 'true' ? ['--idle'] : [])]);
   writeFileSync(path.join(path.dirname(target), 'last-demo.json'), JSON.stringify({repo: target, claude: a, codex: b}, null, 2));
 }

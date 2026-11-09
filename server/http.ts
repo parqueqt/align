@@ -206,7 +206,7 @@ async function join(app: App, req: IncomingMessage, res: ServerResponse): Promis
     sendJson(res, 200, await joinAgent(app, {
       developer: requiredString(body, 'developer').trim(),
       agent,
-      task: requiredString(body, 'task').trim(),
+      task: text('task').trim(),
       description: text('description'),
       role: text('role'),
     }));

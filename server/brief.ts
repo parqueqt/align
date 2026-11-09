@@ -11,15 +11,17 @@ You are **${session.handle}** (${session.agent}, working for ${developer}).${rol
 Your worktree: ${session.worktreePath} (branch \`${session.branch}\`). Stay inside it.
 Other agents work on the same project in parallel, in their own worktrees. You coordinate with them through the \`align\` MCP tools.
 
-## Your task (${task?.id ?? '-'})
+${task ? `## Your task (${task.id})
 
-**${task?.title ?? session.title}**
+**${task.title}**
 
-${task?.description ?? ''}
+${task.description}` : `## Your task
+
+Your developer will tell you in this terminal what to work on. When they do, register it with \`align.task_register\` (a short title and the files you expect to touch) before you start.`}
 
 ## Collaboration protocol
 
-1. Call \`align.sync\` first. It shows your task, the other agents and their tasks, your inbox and the shared decisions.
+1. Call \`align.sync\` when you start work. It shows your task, the other agents and their tasks, your inbox and the shared decisions.
 2. Record what you will touch with \`align.task_update\` (\`files\`, \`note\`), and keep \`note\` current as you progress.
 3. Shared contracts (API shapes, field names, update semantics) live in shared memory. Before relying on one, \`align.memory_search\` / \`align.memory_get\`. When you decide one, \`align.memory_publish\` it (kind \`decision\`). To change one, read it and publish with \`expected_version\`.
 4. If you depend on another agent's work, ask them with \`align.message_send\` (kind \`question\`), keep working on what does not depend on the answer, and call \`align.message_wait\` when you need the answer to continue.

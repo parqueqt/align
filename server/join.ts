@@ -85,10 +85,11 @@ export async function joinAgent(app: App, input: JoinInput): Promise<JoinResult>
     baseSha,
     mcpToken: randomBytes(24).toString('hex'),
   });
-  const task = app.store.createTask({title: input.task, description: input.description, status: 'in_progress', sessionId: session.id});
-  app.store.updateSession(session.id, {taskId: task.id});
-  app.store.addActivity({type: 'session_started', actorSessionId: session.id, taskId: task.id, subject: handle});
-  app.store.addActivity({type: 'task_registered', actorSessionId: session.id, taskId: task.id, subject: task.title});
+  // Without a task the agent joins empty-handed and registers one when its developer says what to build.
+  const task = input.task ? app.store.createTask({title: input.task, description: input.description, status: 'in_progress', sessionId: session.id}) : null;
+  if (task) app.store.updateSession(session.id, {taskId: task.id});
+  app.store.addActivity({type: 'session_started', actorSessionId: session.id, taskId: task?.id ?? null, subject: handle});
+  if (task) app.store.addActivity({type: 'task_registered', actorSessionId: session.id, taskId: task.id, subject: task.title});
 
   const mcpUrl = `http://127.0.0.1:${app.config.port}/mcp/${session.mcpToken}`;
   const dir = path.join(worktreePath, '.align');
@@ -102,7 +103,7 @@ export async function joinAgent(app: App, input: JoinInput): Promise<JoinResult>
   else trustForCodex(worktreePath);
 
   app.bus.touch();
-  return {sessionId: session.id, handle, taskId: task.id, worktreePath, branch, mcpUrl};
+  return {sessionId: session.id, handle, taskId: task?.id ?? '', worktreePath, branch, mcpUrl};
 }
 
 function claudeSettings() {
