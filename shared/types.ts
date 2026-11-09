@@ -168,6 +168,8 @@ export type ActivityType =
   | 'memory_published'
   | 'memory_updated'
   | 'memory_read'
+  | 'decision_requested'
+  | 'decision_recorded'
   | 'publish_rejected'
   | 'impact_created'
   | 'impact_resolved'

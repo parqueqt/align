@@ -253,6 +253,61 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
     return data({status: result.status, key: result.entry.key, version: result.entry.version});
   }));
 
+  async function publishDecision(session: SessionRow, key: string, title: string, body: string) {
+    const current = app.store.getMemory(normalizeKey(key));
+    const result = await app.memory.publish(session, {key, kind: 'decision', title, body, expectedVersion: current?.version});
+    if (result.status === 'version_conflict') throw new Error(`Decision ${key} changed meanwhile (now v${result.entry.version}); retry`);
+    return result.entry;
+  }
+
+  function tellPeers(session: SessionRow, subject: string, body: string, requiresAction: boolean, skip: Set<string> = new Set()) {
+    for (const peer of app.store.listSessions()) {
+      if (peer.id === session.id || skip.has(peer.id)) continue;
+      app.coordination.sendMessage(session, {to: peer.id, kind: 'notice', subject, body, requiresAction});
+    }
+  }
+
+  server.registerTool('decision_request', {
+    description: 'Record that a decision needs your developer (product/design choice, conflicting requirements, risky change). Marks it pending in shared memory and tells the other agents. Then ask your developer in your terminal.',
+    inputSchema: {
+      key: z.string().min(1),
+      question: z.string().min(1),
+      options: z.array(z.string().min(1)).optional(),
+    },
+  }, guarded(async args => {
+    const session = self();
+    const developer = developerName(app, session.developerId);
+    const options = (args.options ?? []).map((option, i) => `${i + 1}. ${option}`).join('\n');
+    const entry = await publishDecision(session, args.key, `PENDING (${developer}): ${args.question}`,
+      `Status: pending human decision\nOwner: ${developer} (asked by ${session.handle})\n\n${args.question}${options ? `\n\nOptions:\n${options}` : ''}`);
+    app.store.addActivity({type: 'decision_requested', actorSessionId: session.id, taskId: session.taskId, subject: entry.key, data: {question: args.question, developer}});
+    tellPeers(session, `Pending human decision: ${entry.key}`, `${developer} must decide: ${args.question}${options ? `\nOptions:\n${options}` : ''}\nDo not implement behaviour that depends on this until it is decided; you will be notified. Work on everything else.`, false);
+    app.bus.touch();
+    return data({key: entry.key, version: entry.version, status: 'pending', ask: developer});
+  }));
+
+  server.registerTool('decision_record', {
+    description: "Record your developer's answer to a pending decision. Stores it in shared memory as approved and notifies affected agents.",
+    inputSchema: {
+      key: z.string().min(1),
+      decision: z.string().min(1).describe('The decision, stated precisely enough to implement.'),
+      developer_said: z.string().min(1).describe("Your developer's answer, in their own words."),
+    },
+  }, guarded(async args => {
+    const session = self();
+    const developer = developerName(app, session.developerId);
+    const key = normalizeKey(args.key);
+    if (!app.store.getMemory(key)) throw new Error(`No pending decision ${key}: call decision_request first`);
+    const entry = await publishDecision(session, key, `APPROVED by ${developer}: ${args.decision}`.slice(0, 200),
+      `Status: approved by ${developer} (human), recorded by ${session.handle}\n\nDecision: ${args.decision}\n\n${developer} said: "${args.developer_said}"`);
+    app.store.addActivity({type: 'decision_recorded', actorSessionId: session.id, taskId: session.taskId, subject: entry.key, data: {version: entry.version, developer, decision: args.decision}});
+    // Agents linked to the decision already received a decision_change; tell everyone else too.
+    const impacted = new Set(app.store.listImpacts().filter(impact => impact.sourceKey === key && impact.toVersion === entry.version).map(impact => impact.sessionId));
+    tellPeers(session, `Decision approved: ${key}`, `${developer} decided: ${args.decision}\nRead it with memory_get "${key}" and implement accordingly.`, true, impacted);
+    app.bus.touch();
+    return data({key: entry.key, version: entry.version, status: 'approved', by: developer});
+  }));
+
   server.registerTool('message_send', {
     description: 'Send a message to another agent by handle, session id, or task id.',
     inputSchema: {
@@ -332,7 +387,12 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
     if (!known) throw new Error(`Unknown branch "${args.branch}": use a peer's branch or the project's base branch`);
     const result = await app.git.merge(session.worktreePath, args.branch, authorName(session));
     if (result.status === 'conflict') return failure(result);
-    if (result.status === 'merged') await recordCommit(session, result.sha, result.files);
+    if (result.status === 'merged') {
+      // Files taken from the peer by this merge are shared, not competing edits: do not flag them as overlap.
+      const peer = app.store.listSessions().find(other => other.branch === args.branch);
+      if (peer) for (const file of result.files) app.store.markOverlapSeen(file, session.id, peer.id);
+      await recordCommit(session, result.sha, result.files);
+    }
     return data(result);
   }));
 }

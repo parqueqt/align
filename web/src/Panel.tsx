@@ -77,6 +77,10 @@ function describe(a: Activity, lookup: Lookup): Line | null {
       return {icon: BookPlus, main: decision, tail: actor ?? undefined};
     case 'memory_updated':
       return {icon: RefreshCw, main: decision, tail: actor ?? undefined};
+    case 'decision_requested':
+      return {icon: Ban, main: a.subject, tail: actor ?? undefined, tone: 'warn'};
+    case 'decision_recorded':
+      return {icon: CircleCheck, main: a.subject, tail: actor ?? undefined, tone: 'good'};
     case 'memory_read':
       return {icon: BookPlus, main: `${a.subject} v${String(a.data.version)}`, tail: actor ?? undefined};
     case 'publish_rejected':

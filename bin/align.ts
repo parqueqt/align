@@ -75,6 +75,8 @@ function describe(snapshot: Snapshot, a: Activity): string | null {
     case 'task_updated': return data.status ? `${actor} task  ${a.subject} ${dim('→ ' + data.status)}` : null;
     case 'memory_published': return `${actor} ${green('gbrain publish')}  ${bold(a.subject)} v${data.to ?? 1}`;
     case 'memory_updated': return `${actor} ${green('gbrain update')}  ${bold(a.subject)} v${data.from}→v${data.to}`;
+    case 'decision_requested': return `${actor} ${yellow('asks ' + data.developer)}  ${bold(a.subject)}  ${data.question}`;
+    case 'decision_recorded': return `${actor} ${green(data.developer + ' decided')}  ${bold(a.subject)} v${data.version}  ${data.decision}`;
     case 'memory_read': return `${actor} ${green('gbrain read')}  ${bold(a.subject)} v${data.version}`;
     case 'publish_rejected': return `${actor} ${yellow('publish rejected')}  ${a.subject}`;
     case 'message_sent': {
@@ -289,9 +291,15 @@ async function demo(args: string[]): Promise<void> {
   git('add', '.');
   git('-c', 'user.name=align', '-c', 'user.email=align@localhost', 'commit', '-qm', 'Taskboard starter');
   await init([target]);
-  const briefs = path.join(ROOT, 'demo', 'briefs');
-  const a = await join(['--name', opts.a ?? 'Alice', '--agent', 'claude', '--role', 'Frontend developer', '--task', 'Task editor UI (title + assignee, save)', '--brief', path.join(briefs, 'frontend.md')]);
-  const b = await join(['--name', opts.b ?? 'Bob', '--agent', 'codex', '--role', 'Backend developer', '--task', 'Task update API + persistence (no lost concurrent edits)', '--brief', path.join(briefs, 'backend.md')]);
+  const scenario = opts.scenario ?? 'editor';
+  const briefs = path.join(ROOT, 'demo', 'briefs', scenario === 'editor' ? '' : scenario);
+  const titles: Record<string, [string, string]> = {
+    editor: ['Task editor UI (title + assignee, save)', 'Task update API + persistence (no lost concurrent edits)'],
+    delete: ['Delete button in the task list', 'Task delete API'],
+  };
+  const [frontTask, backTask] = titles[scenario] ?? fail(`unknown scenario ${scenario}`);
+  const a = await join(['--name', opts.a ?? 'Alice', '--agent', 'claude', '--role', 'Frontend developer', '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')]);
+  const b = await join(['--name', opts.b ?? 'Bob', '--agent', 'codex', '--role', 'Backend developer', '--task', backTask, '--brief', path.join(briefs, 'backend.md')]);
   if (opts.launch !== 'false') await launch([a.handle, b.handle]);
   writeFileSync(path.join(path.dirname(target), 'last-demo.json'), JSON.stringify({repo: target, claude: a, codex: b}, null, 2));
 }
