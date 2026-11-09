@@ -8,21 +8,22 @@
   :root { --fg: #111; --muted: #888; --line: #eee; --soft: #f7f7f7; --accent: #ff6600; --claude: #d97757; --codex: #2f3437; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: #fff; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); height: 56px; }
   header b { font-size: 15px; }
   header span { color: var(--muted); }
   header input { margin-left: auto; width: 280px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; outline: none; }
   header input:focus { border-color: #ccc; }
-  nav { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 24px; border-bottom: 1px solid var(--line); }
-  nav .group { display: flex; gap: 6px; align-items: center; }
-  .chip { border: 1px solid var(--line); background: #fff; border-radius: 99px; padding: 2px 10px; font: inherit; font-size: 12px; color: #555; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
-  .chip:hover { background: var(--soft); }
-  .chip.on { background: var(--fg); border-color: var(--fg); color: #fff; }
-  .chip i { font-style: normal; color: var(--muted); }
-  .chip.on i { color: #bbb; }
-  main { display: grid; grid-template-columns: minmax(280px, 400px) 1fr; height: calc(100vh - 96px); }
+  main { display: grid; grid-template-columns: 200px minmax(280px, 380px) 1fr; height: calc(100vh - 56px); }
+  aside { border-right: 1px solid var(--line); overflow: auto; padding: 10px 0; background: #fcfcfc; }
+  aside h4 { margin: 14px 20px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  .cat { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; font: inherit; text-align: left; padding: 7px 20px; cursor: pointer; color: #333; }
+  .cat:hover { background: var(--soft); }
+  .cat.on { background: #fff1e6; color: var(--fg); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+  .cat i { font-style: normal; margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .cat.empty { color: #bbb; }
   #list { border-right: 1px solid var(--line); overflow: auto; }
-  .section { padding: 14px 24px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+  .head { padding: 14px 24px 8px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .head span { color: var(--muted); font-weight: 400; }
   .row { padding: 10px 24px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .row:hover { background: var(--soft); }
   .row.on { background: #fff6ef; }
@@ -35,7 +36,7 @@
   .pill.pending { background: #fff1e6; color: #b34700; }
   .pill.approved { background: #eaf7ee; color: #1f7a3d; }
   .pill.conflict { background: #fde8e8; color: #b42318; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
   .claude { background: var(--claude); } .codex { background: var(--codex); }
   #detail { overflow: auto; padding: 28px 36px; }
   h2 { margin: 0 0 4px; font-size: 18px; }
@@ -47,46 +48,55 @@
 </head>
 <body>
 <header><b>Memory</b><span id="project"></span><input id="q" placeholder="Search" autocomplete="off"></header>
-<nav><div class="group" id="kinds"></div><div class="group" id="statuses"></div><div class="group" id="authors"></div></nav>
-<main><section id="list"></section><section id="detail"></section></main>
+<main><aside id="cats"></aside><section id="list"></section><section id="detail"></section></main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const when = ms => new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
 const who = a => a ? `<span class="dot ${esc(a.agent)}"></span>${esc(a.developer ? a.developer + ' · ' : '')}${esc(a.handle)}` : 'GBrain';
-const KINDS = ['decision', 'convention', 'rule', 'context'];
-const LABEL = {decision: 'Decisions', convention: 'Conventions', rule: 'Rules', context: 'Context'};
+const KINDS = [['decision', 'Decisions'], ['convention', 'Conventions'], ['rule', 'Rules'], ['context', 'Context']];
+const STATUSES = [['pending', 'Pending'], ['conflict', 'Conflict'], ['approved', 'Approved']];
 const statusOf = t => /^CONFLICT/.test(t) ? 'conflict' : /^PENDING/.test(t) ? 'pending' : /^APPROVED/.test(t) ? 'approved' : null;
+const authorOf = e => e.author ? (e.author.developer ?? e.author.handle) : null;
 const pill = s => s ? `<span class="pill ${s}">${s}</span>` : '';
 let selected = null, query = '', entries = [], seen = new Set(), first = true;
-const filter = {kind: null, status: null, author: null};
+// One active category: {type: 'all'|'kind'|'status'|'author', value}. The URL hash keeps it, e.g. #kind=decision.
+let cat = (() => { const [type, value] = decodeURIComponent(location.hash.slice(1)).split('='); return type && value ? {type, value} : {type: 'all'}; })();
+const matches = (e, c) => c.type === 'all' || (c.type === 'kind' && e.kind === c.value) || (c.type === 'status' && statusOf(e.title) === c.value) || (c.type === 'author' && authorOf(e) === c.value);
+const same = (a, b) => a.type === b.type && a.value === b.value;
 
-function chips(el, field, values, count) {
-  el.innerHTML = [[null, 'All'], ...values].map(([v, label]) =>
-    `<button class="chip${filter[field] === v ? ' on' : ''}" data-v="${esc(v ?? '')}">${esc(label)}${v ? `<i>${count(v)}</i>` : ''}</button>`).join('');
-  for (const b of el.children) b.onclick = () => { filter[field] = b.dataset.v || null; render(); };
+function catButton(c, label, extra = '') {
+  const n = entries.filter(e => matches(e, c)).length;
+  return `<button class="cat${same(c, cat) ? ' on' : ''}${n ? '' : ' empty'}" data-type="${c.type}" data-value="${esc(c.value ?? '')}">${extra}${esc(label)}<i>${n}</i></button>`;
 }
 
 function render() {
-  const authors = [...new Map(entries.filter(e => e.author).map(e => [e.author.developer ?? e.author.handle, e.author])).entries()];
-  const authorOf = e => e.author ? (e.author.developer ?? e.author.handle) : null;
-  chips($('kinds'), 'kind', KINDS.filter(k => entries.some(e => e.kind === k)).map(k => [k, LABEL[k]]), k => entries.filter(e => e.kind === k).length);
-  chips($('statuses'), 'status', ['pending', 'conflict', 'approved'].filter(s => entries.some(e => statusOf(e.title) === s)).map(s => [s, s[0].toUpperCase() + s.slice(1)]), s => entries.filter(e => statusOf(e.title) === s).length);
-  chips($('authors'), 'author', authors.map(([name]) => [name, name]), n => entries.filter(e => authorOf(e) === n).length);
-  const shown = entries.filter(e => (!filter.kind || e.kind === filter.kind) && (!filter.status || statusOf(e.title) === filter.status) && (!filter.author || authorOf(e) === filter.author));
-  $('list').innerHTML = KINDS.map(kind => {
-    const rows = shown.filter(e => e.kind === kind);
-    if (!rows.length) return '';
-    return `<div class="section"><span>${LABEL[kind]}</span><span>${rows.length}</span></div>` + rows.map(e => `
-      <div class="row${e.key === selected ? ' on' : ''}${!first && !seen.has(e.key + ':' + e.version) ? ' fresh' : ''}" data-key="${esc(e.key)}">
-        <div class="key">${esc(e.key)}</div>
-        <div class="meta">v${e.version}${pill(statusOf(e.title))}<span>${who(e.author)}</span><span>${when(e.updatedAt)}</span></div>
-        <div class="title">${e.snippet ? esc(e.snippet) : esc(e.title.replace(/^(PENDING|APPROVED|CONFLICT)[^:]*:\s*/, ''))}</div>
-      </div>`).join('');
-  }).join('');
+  const authors = [...new Map(entries.filter(e => e.author).map(e => [authorOf(e), e.author])).entries()];
+  $('cats').innerHTML =
+    catButton({type: 'all'}, 'All memory') +
+    '<h4>Type</h4>' + KINDS.map(([v, l]) => catButton({type: 'kind', value: v}, l)).join('') +
+    '<h4>Status</h4>' + STATUSES.map(([v, l]) => catButton({type: 'status', value: v}, l)).join('') +
+    (authors.length ? '<h4>Author</h4>' + authors.map(([name, a]) => catButton({type: 'author', value: name}, name, `<span class="dot ${esc(a.agent)}"></span>`)).join('') : '');
+  for (const b of $('cats').querySelectorAll('.cat')) b.onclick = () => {
+    cat = b.dataset.type === 'all' ? {type: 'all'} : {type: b.dataset.type, value: b.dataset.value};
+    history.replaceState(null, '', cat.type === 'all' ? location.pathname : `#${cat.type}=${encodeURIComponent(cat.value)}`);
+    const shown = entries.filter(e => matches(e, cat));
+    if (!shown.some(e => e.key === selected)) { selected = shown[0]?.key ?? null; loadDetail(); }
+    render();
+  };
+
+  const shown = entries.filter(e => matches(e, cat));
+  const title = cat.type === 'all' ? 'All memory' : cat.type === 'kind' ? KINDS.find(k => k[0] === cat.value)?.[1] : cat.type === 'status' ? STATUSES.find(s => s[0] === cat.value)?.[1] : cat.value;
+  $('list').innerHTML = `<div class="head">${esc(title)}<span>${shown.length}</span></div>` + shown.map(e => `
+    <div class="row${e.key === selected ? ' on' : ''}${!first && !seen.has(e.key + ':' + e.version) ? ' fresh' : ''}" data-key="${esc(e.key)}">
+      <div class="key">${esc(e.key)}</div>
+      <div class="meta"><span class="pill">${esc(e.kind)}</span>v${e.version}${pill(statusOf(e.title))}<span>${who(e.author)}</span><span>${when(e.updatedAt)}</span></div>
+      <div class="title">${e.snippet ? esc(e.snippet) : esc(e.title.replace(/^(PENDING|APPROVED|CONFLICT)[^:]*:\s*/, ''))}</div>
+    </div>`).join('');
   for (const e of entries) seen.add(e.key + ':' + e.version);
   first = false;
   for (const row of $('list').querySelectorAll('.row')) row.onclick = () => { selected = row.dataset.key; render(); loadDetail(); };
+  if (!selected) $('detail').innerHTML = '';
 }
 
 async function loadList() {
@@ -95,12 +105,12 @@ async function loadList() {
   const data = await r.json();
   $('project').textContent = data.project ?? '';
   entries = data.entries;
-  if (!selected && entries[0]) { selected = entries[0].key; loadDetail(); }
+  if (!selected) { selected = entries.find(e => matches(e, cat))?.key ?? null; loadDetail(); }
   render();
 }
 
 async function loadDetail() {
-  if (!selected) return;
+  if (!selected) { $('detail').innerHTML = ''; return; }
   const r = await fetch('/api/memory/' + encodeURIComponent(selected));
   if (!r.ok) return;
   const e = await r.json();

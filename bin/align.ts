@@ -185,7 +185,10 @@ function claudeExe(): string {
   return existsSync(local) ? local : 'claude';
 }
 
-const KICKOFF = 'Read .align/BRIEF.md and do your task, following its collaboration protocol. Start by calling align.sync.';
+// Set with ALIGN_LANGUAGE; keep it free of double quotes (it is passed as a TOML string to Codex).
+const LANGUAGE_RULE = `Always reply to your developer in ${process.env.ALIGN_LANGUAGE || 'English'}, even when they write in another language. Write align messages, shared memory and commit messages in ${process.env.ALIGN_LANGUAGE || 'English'} too.`;
+
+const KICKOFF ='Read .align/BRIEF.md and do your task, following its collaboration protocol. Start by calling align.sync.';
 
 /** Starts the agent's own CLI in this terminal, connected to Align. */
 async function run(args: string[]): Promise<void> {
@@ -210,6 +213,7 @@ async function run(args: string[]): Promise<void> {
       '--no-chrome',
       '--allowedTools', 'mcp__align', 'Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'Read', 'Glob', 'Grep',
       '-n', handle,
+      '--append-system-prompt', LANGUAGE_RULE,
       ...(opts.model ? ['--model', opts.model] : []),
       ...(prompt ? [prompt] : []),
     ];
@@ -224,6 +228,7 @@ async function run(args: string[]): Promise<void> {
       '-c', 'mcp_servers.align.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.align.tool_timeout_sec=300',
       '-c', 'check_for_update_on_startup=false',
+      '-c', `developer_instructions="${LANGUAGE_RULE}"`,
       ...(opts.model ? ['-m', opts.model] : []),
       ...(prompt ? [prompt] : []),
     ];

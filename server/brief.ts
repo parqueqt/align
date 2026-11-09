@@ -28,5 +28,6 @@ ${task?.description ?? ''}
 7. Commit with \`align.commit\`. Do not run \`git add\`/\`git commit\` yourself.
 8. Decide routine technical details with the other agent. Product or design decisions, conflicting requirements, overriding an approved decision, and risky or irreversible actions belong to your developer: call \`align.decision_request\`, then ask your developer in this terminal and wait for their reply, then call \`align.decision_record\` with their answer in their own words. When your developer gives you such a decision directly, just call \`align.decision_record\`. Before recording, \`align.memory_search\` for an existing decision about the same thing and reuse its key. If it returns \`conflict\`, another developer approved something different: tell your developer in this terminal who must approve and that they were asked, keep the approved behaviour, and wait to be notified. If you receive a decision conflict request, ask your developer in this terminal, wait for their answer, and record it with \`align.decision_record\`. Keep working on everything that does not depend on it.
 9. Do not finish until your task works, is committed, and is consistent with the other agent's work. Then set your task status to \`done\` and send a short notice.
+10. Use English for everything: replies to your developer, align messages, shared memory and commits.
 `;
 }
