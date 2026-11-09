@@ -287,7 +287,7 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
   }));
 
   server.registerTool('decision_record', {
-    description: "Record your developer's answer to a pending decision. Stores it in shared memory as approved and notifies affected agents.",
+    description: "Record a decision your developer made, whether you asked them (decision_request) or they told you directly. Stores it in shared memory as approved and notifies affected agents.",
     inputSchema: {
       key: z.string().min(1),
       decision: z.string().min(1).describe('The decision, stated precisely enough to implement.'),
@@ -297,7 +297,30 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
     const session = self();
     const developer = developerName(app, session.developerId);
     const key = normalizeKey(args.key);
-    if (!app.store.getMemory(key)) throw new Error(`No pending decision ${key}: call decision_request first`);
+
+    // A human's approved decision is never overwritten by another human's agent: that is a conflict,
+    // recorded in shared memory and sent to the approver's agent, which asks its own developer.
+    const current = app.store.getMemory(key);
+    const owner = current && (/^CONFLICT \(waiting for ([^)]+)\)/.exec(current.title)?.[1] ?? /^APPROVED by ([^:]+):/.exec(current.title)?.[1]);
+    if (current && owner && owner !== developer) {
+      const approved = /Decision: (.*)/.exec(current.body)?.[1] ?? /Approved by [^:]+: (.*)/.exec(current.body)?.[1] ?? current.title;
+      const entry = await publishDecision(session, key, `CONFLICT (waiting for ${owner}): ${developer} proposes ${args.decision}`.slice(0, 200),
+        `Status: conflict, waiting for ${owner}'s approval\n\nApproved by ${owner}: ${approved}\nProposed by ${developer} (${session.handle}): ${args.decision}\n${developer} said: "${args.developer_said}"`);
+      app.store.addActivity({type: 'decision_conflict', actorSessionId: session.id, taskId: session.taskId, subject: key, data: {version: entry.version, owner, proposer: developer, approved, proposed: args.decision}});
+      const ownerSessions = app.store.listSessions().filter(peer => peer.id !== session.id && developerName(app, peer.developerId) === owner);
+      for (const peer of ownerSessions) {
+        app.coordination.sendMessage(session, {
+          to: peer.id,
+          kind: 'request',
+          subject: `Decision conflict: ${key}`,
+          body: `${developer} wants to change "${key}", which ${owner} approved.\nApproved by ${owner}: ${approved}\nProposed by ${developer}: ${args.decision}\n\nAsk ${owner} in your terminal whether to accept the change. Then call decision_record with key "${key}", the decision ${owner} chose, and ${owner}'s words. Until then keep the approved behaviour.`,
+          requiresAction: true,
+        });
+      }
+      app.bus.touch();
+      return data({key, version: entry.version, status: 'conflict', approvedBy: owner, approved, proposed: args.decision, askedAgents: ownerSessions.map(peer => peer.handle)});
+    }
+
     const entry = await publishDecision(session, key, `APPROVED by ${developer}: ${args.decision}`.slice(0, 200),
       `Status: approved by ${developer} (human), recorded by ${session.handle}\n\nDecision: ${args.decision}\n\n${developer} said: "${args.developer_said}"`);
     app.store.addActivity({type: 'decision_recorded', actorSessionId: session.id, taskId: session.taskId, subject: entry.key, data: {version: entry.version, developer, decision: args.decision}});

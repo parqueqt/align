@@ -170,6 +170,7 @@ export type ActivityType =
   | 'memory_read'
   | 'decision_requested'
   | 'decision_recorded'
+  | 'decision_conflict'
   | 'publish_rejected'
   | 'impact_created'
   | 'impact_resolved'

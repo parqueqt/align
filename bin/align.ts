@@ -1,13 +1,16 @@
 // align — CLI for the Align collaboration layer.
 import {spawn, spawnSync} from 'node:child_process';
-import {cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
 import type {Activity, Snapshot} from '../shared/types.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const PORT = Number(process.env.ALIGN_PORT || 4600);
+// `--port N` works anywhere on the command line, so windows opened by `launch` reach the right server.
+const portFlag = process.argv.indexOf('--port');
+const portValue = portFlag > 1 ? process.argv.splice(portFlag, 2)[1] : undefined;
+const PORT = Number(portValue || process.env.ALIGN_PORT || 4600);
 const SERVER = `http://127.0.0.1:${PORT}`;
 const isWindows = process.platform === 'win32';
 
@@ -54,6 +57,7 @@ const orange = paint('38;5;173');
 const cyan = paint('36');
 const green = paint('32');
 const yellow = paint('33');
+const red = paint('31');
 
 const agentMark = (agent: string) => (agent === 'claude' ? orange('●') : cyan('●'));
 const time = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
@@ -76,6 +80,7 @@ function describe(snapshot: Snapshot, a: Activity): string | null {
     case 'memory_published': return `${actor} ${green('gbrain publish')}  ${bold(a.subject)} v${data.to ?? 1}`;
     case 'memory_updated': return `${actor} ${green('gbrain update')}  ${bold(a.subject)} v${data.from}→v${data.to}`;
     case 'decision_requested': return `${actor} ${yellow('asks ' + data.developer)}  ${bold(a.subject)}  ${data.question}`;
+    case 'decision_conflict': return `${actor} ${red('conflict')}  ${bold(a.subject)}  ${data.owner}: ${data.approved}  ≠  ${data.proposer}: ${data.proposed}  ${dim('→ asking ' + data.owner)}`;
     case 'decision_recorded': return `${actor} ${green(data.developer + ' decided')}  ${bold(a.subject)} v${data.version}  ${data.decision}`;
     case 'memory_read': return `${actor} ${green('gbrain read')}  ${bold(a.subject)} v${data.version}`;
     case 'publish_rejected': return `${actor} ${yellow('publish rejected')}  ${a.subject}`;
@@ -199,6 +204,8 @@ async function run(args: string[]): Promise<void> {
       '--mcp-config', path.join(dir, '.align', 'mcp.json'),
       '--settings', path.join(dir, '.align', 'claude-settings.json'),
       '--permission-mode', 'acceptEdits',
+      // The browser extension asks for tab access mid-task and stalls an unattended terminal.
+      '--no-chrome',
       '--allowedTools', 'mcp__align', 'Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'Read', 'Glob', 'Grep',
       '-n', handle,
       ...(opts.model ? ['--model', opts.model] : []),
@@ -226,22 +233,82 @@ async function run(args: string[]): Promise<void> {
   child.on('error', error => fail(`${exe}: ${error.message}`));
 }
 
-/** Opens one Windows Terminal window: the first agent on the left, the second on the right. */
+const AGENT_LABEL: Record<string, string> = {claude: 'Claude Code', codex: 'Codex'};
+const TAB_COLOR: Record<string, string> = {claude: '#D97757', codex: '#2F3437'};
+
+function screenArea(): {x: number; y: number; width: number; height: number} {
+  const r = spawnSync('powershell', ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; $a=[System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea; "$($a.X) $($a.Y) $($a.Width) $($a.Height)"'], {encoding: 'utf8'});
+  const [x, y, width, height] = (r.stdout ?? '').trim().split(/\s+/).map(Number);
+  return width ? {x: x!, y: y!, width, height: height!} : {x: 0, y: 0, width: 1920, height: 1040};
+}
+
+/**
+ * One Windows Terminal window per developer, titled "<developer> · <agent>" and placed
+ * side by side, plus a coordination window below. The title is fixed so the agent cannot replace it.
+ */
 async function launch(args: string[]): Promise<void> {
   const {positional, opts} = flags(args);
   if (positional.length < 2) fail('usage: align launch <left-handle> <right-handle>');
-  const snapshot = await api<Snapshot>('GET', '/api/state');
-  const [left, right] = positional.map(h => worktreeOf(h!, snapshot));
-  const alignCmd = (handle: string) => [process.execPath, ...nodeArgs('bin/align.ts'), 'run', handle, ...(opts.model ? [] : [])];
   if (!isWindows) fail('launch uses Windows Terminal; elsewhere run `align run <handle>` in two terminals');
-  const wtArgs = [
-    '-w', 'new',
-    'new-tab', '--title', left!.handle, '-d', left!.worktreePath, ...alignCmd(left!.handle),
-    ';', 'split-pane', '-V', '--title', right!.handle, '-d', right!.worktreePath, ...alignCmd(right!.handle),
-  ];
-  if (opts.watch !== 'false') wtArgs.push(';', 'split-pane', '-H', '-s', '0.25', '--title', 'align', '-d', ROOT, process.execPath, ...nodeArgs('bin/align.ts'), 'watch');
-  spawn('wt', wtArgs, {detached: true, stdio: 'ignore'}).unref();
-  console.log(`launched ${left!.handle} | ${right!.handle}`);
+  const snapshot = await api<Snapshot>('GET', '/api/state');
+  const sessions = positional.map(h => worktreeOf(h!, snapshot));
+  const self = (...a: string[]) => [process.execPath, ...nodeArgs('bin/align.ts'), ...a, '--port', String(PORT)];
+  const area = screenArea();
+  const watchHeight = opts.watch === 'false' ? 0 : Math.round(area.height * 0.28);
+  // Measured on Windows Terminal's default profile: about 10 x 25 px per character cell.
+  const cell = {w: 10, h: 25};
+  const half = Math.floor(area.width / 2);
+  const window = (name: string, title: string, color: string, dir: string, x: number, y: number, w: number, h: number, command: string[]) => {
+    spawn('wt', [
+      '-w', name, '--pos', `${x},${y}`, '--size', `${Math.max(40, Math.floor(w / cell.w) - 2)},${Math.max(10, Math.floor(h / cell.h) - 3)}`,
+      'new-tab', '--title', title, '--suppressApplicationTitle', '--tabColor', color, '-d', dir, ...command,
+    ], {detached: true, stdio: 'ignore'}).unref();
+  };
+  sessions.forEach((session, i) => {
+    const developer = snapshot.developers.find(d => d.id === session.developerId)?.name ?? session.handle;
+    const title = `${developer} · ${AGENT_LABEL[session.agent] ?? session.agent}`;
+    window(`align-${session.handle}`, title, TAB_COLOR[session.agent] ?? '#666666', session.worktreePath, area.x + i * half, area.y, half, area.height - watchHeight, self('run', session.handle));
+  });
+  if (watchHeight) window('align-watch', 'Align · coordination', '#FF6600', ROOT, area.x, area.y + area.height - watchHeight, area.width, watchHeight, self('watch'));
+  console.log(`launched ${sessions.map(s => s.handle).join(' | ')}`);
+}
+
+/** Reads GBrain's own page files (its markdown write-through), not Align's mirror. */
+async function memory(args: string[]): Promise<void> {
+  if (args.includes('--open')) {
+    const url = `${SERVER}/memory`;
+    await api('GET', '/api/memory');
+    spawn(isWindows ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open', isWindows ? ['/c', 'start', '', url] : [url], {detached: true, stdio: 'ignore'}).unref();
+    console.log(url);
+    return;
+  }
+  const home = path.resolve(process.env.ALIGN_HOME || path.join(homedir(), '.align'));
+  const contentRoot = path.join(home, 'gbrain', '.gbrain', 'content');
+  const pages: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, {withFileTypes: true})) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.md') && full.includes(`${path.sep}align${path.sep}`)) pages.push(full);
+    }
+  };
+  if (existsSync(contentRoot)) walk(contentRoot);
+  if (pages.length === 0) fail(`no Align pages in GBrain at ${contentRoot}`);
+  const key = args[0];
+  for (const file of pages) {
+    const slug = file.slice(file.indexOf(`${path.sep}align${path.sep}`) + 1).replace(/\.md$/, '').split(path.sep).join('/');
+    if (key && !slug.endsWith(`/${key}`)) continue;
+    if (!key) {
+      const text = readFileSync(file, 'utf8');
+      const folded = /^title:\s*[>|]-?\s*\n((?:[ \t]+.*\n?)+)/m.exec(text)?.[1];
+      const title = folded ? folded.replace(/\s+/g, ' ').trim() : (/^title:\s*["']?(.*?)["']?\s*$/m.exec(text)?.[1] ?? '');
+      const version = /^align_version:\s*(\d+)/m.exec(text)?.[1] ?? '?';
+      console.log(`${bold(slug)} v${version}  ${dim(title)}`);
+    } else {
+      console.log(dim(file));
+      console.log(readFileSync(file, 'utf8'));
+    }
+  }
 }
 
 async function status(): Promise<void> {
@@ -276,35 +343,40 @@ async function watch(): Promise<void> {
 
 async function demo(args: string[]): Promise<void> {
   const {opts} = flags(args);
-  const target = path.resolve(opts.dir ?? path.join(homedir(), 'align-demo', 'taskboard'));
+  const scenario = opts.scenario ?? 'editor';
+  const template = scenario === 'game' || scenario === 'flappy' ? scenario : 'taskboard';
+  const target = path.resolve(opts.dir ?? path.join(homedir(), 'align-demo', template));
   if (existsSync(target)) {
     if (opts.reset !== 'true') fail(`${target} exists; pass --reset to recreate it`);
     rmSync(target, {recursive: true, force: true});
   }
   mkdirSync(path.dirname(target), {recursive: true});
-  cpSync(path.join(ROOT, 'demo', 'taskboard'), target, {recursive: true});
+  cpSync(path.join(ROOT, 'demo', template), target, {recursive: true});
   const git = (...a: string[]) => {
     const r = spawnSync('git', a, {cwd: target, encoding: 'utf8'});
     if (r.status !== 0) fail(`git ${a.join(' ')}: ${r.stderr}`);
   };
   git('init', '-q', '-b', 'main');
   git('add', '.');
-  git('-c', 'user.name=align', '-c', 'user.email=align@localhost', 'commit', '-qm', 'Taskboard starter');
+  git('-c', 'user.name=align', '-c', 'user.email=align@localhost', 'commit', '-qm', 'Starter');
   await init([target]);
-  const scenario = opts.scenario ?? 'editor';
   const briefs = path.join(ROOT, 'demo', 'briefs', scenario === 'editor' ? '' : scenario);
   const titles: Record<string, [string, string]> = {
     editor: ['Task editor UI (title + assignee, save)', 'Task update API + persistence (no lost concurrent edits)'],
     delete: ['Delete button in the task list', 'Task delete API'],
+    game: ['YC game structure: loop, state, entities, scoring', 'Game visual design (live design requests)'],
+    flappy: ['Demo Day Flight: game logic and the bird', 'Demo Day Flight: visual design (live requests)'],
   };
+  const roles: Record<string, [string, string]> = {game: ['Game architect', 'Game designer'], flappy: ['Game developer', 'Game designer']};
+  const [frontRole, backRole] = roles[scenario] ?? ['Frontend developer', 'Backend developer'];
   const [frontTask, backTask] = titles[scenario] ?? fail(`unknown scenario ${scenario}`);
-  const a = await join(['--name', opts.a ?? 'Alice', '--agent', 'claude', '--role', 'Frontend developer', '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')]);
-  const b = await join(['--name', opts.b ?? 'Bob', '--agent', 'codex', '--role', 'Backend developer', '--task', backTask, '--brief', path.join(briefs, 'backend.md')]);
+  const a = await join(['--name', opts.a ?? 'James', '--agent', 'claude', '--role', frontRole, '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')]);
+  const b = await join(['--name', opts.b ?? 'Bumsoo', '--agent', 'codex', '--role', backRole, '--task', backTask, '--brief', path.join(briefs, 'backend.md')]);
   if (opts.launch !== 'false') await launch([a.handle, b.handle]);
   writeFileSync(path.join(path.dirname(target), 'last-demo.json'), JSON.stringify({repo: target, claude: a, codex: b}, null, 2));
 }
 
-const commands: Record<string, (args: string[]) => Promise<unknown>> = {serve, init, join, run, launch, status, watch, demo};
+const commands: Record<string, (args: string[]) => Promise<unknown>> = {serve, init, join, run, launch, status, watch, demo, memory};
 const handler = commands[command];
 if (!handler) {
   console.log(`align <command>
@@ -316,6 +388,8 @@ if (!handler) {
   run <handle>                  start that agent's own CLI, connected
   launch <left> <right>         open both agents side by side (Windows Terminal)
   status                        agents, tasks, memory, messages
+  memory [key]                  pages stored in GBrain (all, or one in full)
+  memory --open                 open the shared memory viewer in the browser
   watch                         live coordination events
   demo [--reset]                prepared taskboard demo: init, join, launch`);
   process.exit(command === 'help' ? 0 : 1);

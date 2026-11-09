@@ -157,6 +157,46 @@ async function createSession(app: App, req: IncomingMessage, res: ServerResponse
   sendJson(res, 200, await app.sessions.create({developerId, agent, prompt}));
 }
 
+function author(app: App, sessionId: string | null) {
+  const session = sessionId ? app.store.getSession(sessionId) : null;
+  if (!session) return null;
+  return {handle: session.handle, agent: session.agent, developer: app.store.getDeveloper(session.developerId)?.name ?? null};
+}
+
+/** Project memory as GBrain holds it; Align adds who wrote each version and when. */
+async function memoryList(app: App, query: string | null) {
+  const entries = app.store.listMemory();
+  const view = (entry: (typeof entries)[number], snippet?: string) => ({
+    key: entry.key, kind: entry.kind, title: entry.title, version: entry.version, slug: entry.gbrainSlug,
+    updatedAt: entry.updatedAt, author: author(app, entry.authorSessionId), snippet: snippet ?? null,
+  });
+  if (!query?.trim()) return {project: app.store.getProject()?.name ?? null, gbrain: app.gbrain.ready(), entries: entries.map(entry => view(entry))};
+  if (!app.gbrain.ready()) throw new HttpError(503, 'gbrain is not ready');
+  const hits = await app.memory.search(query);
+  return {
+    project: app.store.getProject()?.name ?? null,
+    gbrain: true,
+    entries: hits.flatMap(hit => {
+      const entry = entries.find(e => e.key === hit.key);
+      return entry ? [view(entry, hit.snippet)] : [];
+    }),
+  };
+}
+
+async function memoryPage(app: App, key: string) {
+  if (!app.gbrain.ready()) throw new HttpError(503, 'gbrain is not ready');
+  const read = await app.memory.get(null, key);
+  if (!read) throw new HttpError(404, 'not found');
+  const history = [];
+  for (let v = read.entry.version; v >= 1; v--) {
+    const version = app.store.getMemoryVersion(read.entry.key, v);
+    if (version) history.push({version: v, title: version.title, author: author(app, version.authorSessionId), createdAt: version.createdAt});
+  }
+  const readers = app.store.listActivity().filter(a => a.type === 'memory_read' && a.subject === read.entry.key)
+    .map(a => ({...author(app, a.actorSessionId), version: a.data.version, at: a.createdAt}));
+  return {...read.entry, author: author(app, read.entry.authorSessionId), history, readers};
+}
+
 async function join(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   const agent = body.agent;
@@ -219,6 +259,13 @@ async function handleRequest(app: App, req: IncomingMessage, res: ServerResponse
 
   if (method === 'GET' && pathname === '/api/state') return sendJson(res, 200, app.bus.snapshot());
   if (method === 'POST' && pathname === '/api/join') return join(app, req, res);
+  if (method === 'GET' && pathname === '/memory') {
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'});
+    return void res.end(await readFile(path.join(import.meta.dirname, 'memory.html')));
+  }
+  if (method === 'GET' && pathname === '/api/memory') return sendJson(res, 200, await memoryList(app, url.searchParams.get('q')));
+  const memoryKey = /^\/api\/memory\/([^/]+)$/.exec(pathname);
+  if (method === 'GET' && memoryKey) return sendJson(res, 200, await memoryPage(app, decodeURIComponent(memoryKey[1]!)));
   const hook = HOOK_ROUTE.exec(pathname);
   if (method === 'GET' && hook) {
     const session = app.store.getSessionByToken(hook[1]!);

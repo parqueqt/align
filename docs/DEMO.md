@@ -31,6 +31,26 @@ Check the integrated result (frontend `saveTask` against the backend, two users 
 node demo/verify.mjs $HOME\.align\worktrees\p1\alice-claude $HOME\.align\worktrees\p1\bob-codex
 ```
 
+## Game demo: Demo Day Flight (James + Bumsoo)
+
+```powershell
+.\align.cmd serve
+.\align.cmd demo --reset --scenario flappy
+```
+
+Opens "James · Claude Code" (left), "Bumsoo · Codex" (right) and "Align · coordination" (bottom), each window titled with the developer's name. James's agent builds the game logic and the bird and records James's call that the bird is green. Type design requests into Bumsoo's Codex, then "make the bird orange": Align sees that it overrides a decision James approved, marks it as a conflict in shared memory and asks James's agent, which asks James in its terminal. James's answer becomes the decision for both agents.
+
+Other scenarios: `--scenario delete` (a pending product decision), no flag (task editor contract).
+
+## Shared memory
+
+```powershell
+.\align.cmd memory --open     # viewer: browse, search, author, history, readers
+.\align.cmd memory            # GBrain's own page files, from the terminal
+```
+
+GBrain 0.60 has no page browser (its `serve --http` admin dashboard covers OAuth clients, agents and request logs), so Align serves a read-only viewer at `/memory` on its localhost-only server. Content is read live from GBrain. Each Align home has its own GBrain (`<ALIGN_HOME>/gbrain`), separate from any personal brain.
+
 ## Own project
 
 ```powershell

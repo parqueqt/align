@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory</title>
+<style>
+  :root { --fg: #111; --muted: #888; --line: #eee; --soft: #f7f7f7; --accent: #ff6600; --claude: #d97757; --codex: #2f3437; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: #fff; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  header b { font-size: 15px; }
+  header span { color: var(--muted); }
+  header input { margin-left: auto; width: 280px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; outline: none; }
+  header input:focus { border-color: #ccc; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; height: calc(100vh - 53px); }
+  #list { border-right: 1px solid var(--line); overflow: auto; }
+  .row { padding: 12px 24px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:hover { background: var(--soft); }
+  .row.on { background: #fff6ef; }
+  .key { font-weight: 600; word-break: break-all; }
+  .meta { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .title { color: #444; font-size: 13px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .pill { font-size: 11px; padding: 0 6px; border-radius: 99px; background: var(--soft); color: #555; }
+  .pill.pending { background: #fff1e6; color: #b34700; }
+  .pill.approved { background: #eaf7ee; color: #1f7a3d; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .claude { background: var(--claude); } .codex { background: var(--codex); }
+  #detail { overflow: auto; padding: 28px 36px; }
+  h2 { margin: 0 0 4px; font-size: 18px; }
+  pre { white-space: pre-wrap; font: 13px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--soft); border-radius: 10px; padding: 16px 18px; margin: 18px 0; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
+  .line { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 13px; }
+  .line time { color: var(--muted); margin-left: auto; font-size: 12px; }
+  mark { background: #ffe3cc; }
+</style>
+</head>
+<body>
+<header><b>Memory</b><span id="project"></span><input id="q" placeholder="Search" autocomplete="off"></header>
+<main><section id="list"></section><section id="detail"></section></main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const when = ms => new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const who = a => a ? `<span class="dot ${esc(a.agent)}"></span>${esc(a.developer ? a.developer + ' · ' : '')}${esc(a.handle)}` : 'GBrain';
+const status = t => /^PENDING/.test(t) ? '<span class="pill pending">pending</span>' : /^APPROVED/.test(t) ? '<span class="pill approved">approved</span>' : '';
+let selected = null, query = '';
+
+async function loadList() {
+  const r = await fetch('/api/memory' + (query ? '?q=' + encodeURIComponent(query) : ''));
+  if (!r.ok) return;
+  const data = await r.json();
+  $('project').textContent = data.project ?? '';
+  $('list').innerHTML = data.entries.map(e => `
+    <div class="row${e.key === selected ? ' on' : ''}" data-key="${esc(e.key)}">
+      <div class="key">${esc(e.key)}</div>
+      <div class="meta"><span class="pill">${esc(e.kind)}</span>v${e.version}${status(e.title)}<span>${who(e.author)}</span><span>${when(e.updatedAt)}</span></div>
+      <div class="title">${e.snippet ? esc(e.snippet) : esc(e.title)}</div>
+    </div>`).join('');
+  for (const row of $('list').children) row.onclick = () => { selected = row.dataset.key; loadList(); loadDetail(); };
+  if (!selected && data.entries[0]) { selected = data.entries[0].key; loadDetail(); loadList(); }
+}
+
+async function loadDetail() {
+  if (!selected) return;
+  const r = await fetch('/api/memory/' + encodeURIComponent(selected));
+  if (!r.ok) return;
+  const e = await r.json();
+  $('detail').innerHTML = `
+    <h2>${esc(e.title)}</h2>
+    <div class="meta"><span class="pill">${esc(e.kind)}</span>${esc(e.key)} · v${e.version} · ${esc(e.gbrainSlug)}</div>
+    <pre>${esc(e.body)}</pre>
+    <h3>History</h3>${e.history.map(h => `<div class="line">v${h.version}<span>${who(h.author)}</span><time>${when(h.createdAt)}</time></div>`).join('')}
+    ${e.readers.length ? `<h3>Read by</h3>${e.readers.map(x => `<div class="line">${who(x)}<span>v${esc(x.version)}</span><time>${when(x.at)}</time></div>`).join('')}` : ''}`;
+}
+
+let timer;
+$('q').oninput = () => { clearTimeout(timer); timer = setTimeout(() => { query = $('q').value.trim(); loadList(); }, 250); };
+loadList();
+setInterval(() => { loadList(); loadDetail(); }, 4000);
+</script>
+</body>
+</html>

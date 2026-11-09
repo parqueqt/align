@@ -79,6 +79,8 @@ function describe(a: Activity, lookup: Lookup): Line | null {
       return {icon: RefreshCw, main: decision, tail: actor ?? undefined};
     case 'decision_requested':
       return {icon: Ban, main: a.subject, tail: actor ?? undefined, tone: 'warn'};
+    case 'decision_conflict':
+      return {icon: Ban, main: a.subject, tail: actor ?? undefined, tone: 'bad'};
     case 'decision_recorded':
       return {icon: CircleCheck, main: a.subject, tail: actor ?? undefined, tone: 'good'};
     case 'memory_read':
