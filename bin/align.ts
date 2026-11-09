@@ -228,7 +228,9 @@ async function run(args: string[]): Promise<void> {
     ];
   }
   const env = {...process.env};
-  for (const key of ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT']) delete env[key];
+  // A session started from inside another Claude Code session inherits its child-session settings
+  // (for example, no transcript saving). Start every agent as a top-level session.
+  for (const key of Object.keys(env)) if (key === 'CLAUDECODE' || (key.startsWith('CLAUDE_CODE_') && key !== 'CLAUDE_CODE_GIT_BASH_PATH')) delete env[key];
   const child = spawn(exe, argv, {cwd: dir, stdio: 'inherit', env});
   child.on('exit', code => process.exit(code ?? 0));
   child.on('error', error => fail(`${exe}: ${error.message}`));
@@ -270,30 +272,19 @@ async function launch(args: string[]): Promise<void> {
     const title = `${developer} · ${AGENT_LABEL[session.agent] ?? session.agent}`;
     window(`align-${session.handle}`, title, TAB_COLOR[session.agent] ?? '#666666', session.worktreePath, area.x + i * half, area.y, half, area.height - watchHeight, self('run', session.handle, ...(opts.idle === 'true' ? ['--idle'] : [])));
   });
-  if (watchHeight) window('align-watch', 'Align · coordination', '#FF6600', ROOT, area.x, area.y + area.height - watchHeight, area.width, watchHeight, self('watch'));
+  if (watchHeight) window('align-watch', ENGINE_TITLE, '#FF6600', ROOT, area.x, area.y + area.height - watchHeight, area.width, watchHeight, self('watch'));
   // Windows Terminal scales --pos by the display's DPI, so place the windows exactly once they exist.
   const titles = sessions.map(session => `${snapshot.developers.find(d => d.id === session.developerId)?.name ?? session.handle} · ${AGENT_LABEL[session.agent] ?? session.agent}`);
-  const top = area.height - watchHeight;
-  const places = [...titles.map((title, i) => [title, area.x + i * half, area.y, i === titles.length - 1 ? area.width - i * half : half, top] as const),
-    ...(watchHeight ? [['Align · coordination', area.x, area.y + top, area.width, watchHeight] as const] : [])];
   await new Promise(resolve => setTimeout(resolve, 4000));
-  tile(places.map(([title, x, y, w, h]) => ({title, x, y, w, h})));
+  tile(titles[0]!, titles[1]!, watchHeight ? ENGINE_TITLE : '');
   console.log(`launched ${sessions.map(s => s.handle).join(' | ')}`);
 }
 
-function tile(places: {title: string; x: number; y: number; w: number; h: number}[]): void {
-  const table = places.map(p => `'${p.title.replace(/'/g, "''")}'=@(${p.x},${p.y},${p.w},${p.h})`).join(';');
-  const script = `Add-Type @"
-using System; using System.Text; using System.Runtime.InteropServices;
-public static class AlignTile { public delegate bool P(IntPtr h, IntPtr l);
- [DllImport("user32.dll")] public static extern bool EnumWindows(P f, IntPtr l);
- [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
- [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
- [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f); }
-"@
-$global:pos = @{${table}}
-[AlignTile]::EnumWindows({ param($h,$l) if ([AlignTile]::IsWindowVisible($h)) { $t = New-Object Text.StringBuilder 256; [void][AlignTile]::GetWindowText($h,$t,256); $p = $global:pos[$t.ToString()]; if ($p) { [void][AlignTile]::SetWindowPos($h, [IntPtr]::Zero, $p[0], $p[1], $p[2], $p[3], 0x0040) } }; $true }, [IntPtr]::Zero) | Out-Null`;
-  spawnSync('powershell', ['-NoProfile', '-Command', script], {stdio: 'ignore'});
+const ENGINE_TITLE = 'Align · Coordination Engine';
+
+/** Agents side by side on top, the coordination log across the bottom, edge to edge (bin/tile.ps1). */
+function tile(left: string, right: string, bottom: string): void {
+  spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'bin', 'tile.ps1'), left, right, bottom, '0.28'], {stdio: 'ignore'});
 }
 
 /** Reads GBrain's own page files (its markdown write-through), not Align's mirror. */
