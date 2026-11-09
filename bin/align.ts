@@ -194,7 +194,8 @@ async function run(args: string[]): Promise<void> {
   const session = worktreeOf(handle, snapshot);
   const dir = session.worktreePath;
   const info = JSON.parse(readFileSync(path.join(dir, '.align', 'session.json'), 'utf8')) as {mcpUrl: string};
-  const prompt = opts.prompt ?? KICKOFF;
+  // --idle opens the agent without a first prompt, so the developer starts it.
+  const prompt = opts.idle === 'true' ? null : (opts.prompt ?? KICKOFF);
 
   let exe: string;
   let argv: string[];
@@ -209,7 +210,7 @@ async function run(args: string[]): Promise<void> {
       '--allowedTools', 'mcp__align', 'Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'Read', 'Glob', 'Grep',
       '-n', handle,
       ...(opts.model ? ['--model', opts.model] : []),
-      prompt,
+      ...(prompt ? [prompt] : []),
     ];
   } else {
     exe = codexExe();
@@ -223,7 +224,7 @@ async function run(args: string[]): Promise<void> {
       '-c', 'mcp_servers.align.tool_timeout_sec=300',
       '-c', 'check_for_update_on_startup=false',
       ...(opts.model ? ['-m', opts.model] : []),
-      prompt,
+      ...(prompt ? [prompt] : []),
     ];
   }
   const env = {...process.env};
@@ -267,7 +268,7 @@ async function launch(args: string[]): Promise<void> {
   sessions.forEach((session, i) => {
     const developer = snapshot.developers.find(d => d.id === session.developerId)?.name ?? session.handle;
     const title = `${developer} · ${AGENT_LABEL[session.agent] ?? session.agent}`;
-    window(`align-${session.handle}`, title, TAB_COLOR[session.agent] ?? '#666666', session.worktreePath, area.x + i * half, area.y, half, area.height - watchHeight, self('run', session.handle));
+    window(`align-${session.handle}`, title, TAB_COLOR[session.agent] ?? '#666666', session.worktreePath, area.x + i * half, area.y, half, area.height - watchHeight, self('run', session.handle, ...(opts.idle === 'true' ? ['--idle'] : [])));
   });
   if (watchHeight) window('align-watch', 'Align · coordination', '#FF6600', ROOT, area.x, area.y + area.height - watchHeight, area.width, watchHeight, self('watch'));
   console.log(`launched ${sessions.map(s => s.handle).join(' | ')}`);
@@ -372,7 +373,7 @@ async function demo(args: string[]): Promise<void> {
   const [frontTask, backTask] = titles[scenario] ?? fail(`unknown scenario ${scenario}`);
   const a = await join(['--name', opts.a ?? 'James', '--agent', 'claude', '--role', frontRole, '--task', frontTask, '--brief', path.join(briefs, 'frontend.md')]);
   const b = await join(['--name', opts.b ?? 'Bumsoo', '--agent', 'codex', '--role', backRole, '--task', backTask, '--brief', path.join(briefs, 'backend.md')]);
-  if (opts.launch !== 'false') await launch([a.handle, b.handle]);
+  if (opts.launch !== 'false') await launch([a.handle, b.handle, ...(opts.idle === 'true' ? ['--idle'] : [])]);
   writeFileSync(path.join(path.dirname(target), 'last-demo.json'), JSON.stringify({repo: target, claude: a, codex: b}, null, 2));
 }
 

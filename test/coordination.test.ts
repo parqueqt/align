@@ -1165,25 +1165,29 @@ test('mcp exposes exactly the designed tools and rejects non-POST', async () => 
   const mcp = await mcpSession(session);
   try {
     const {tools} = await mcp.client.listTools();
-    assert.deepEqual(tools.map(tool => tool.name).sort(), ['commit', 'impact_ack', 'memory_get', 'memory_publish', 'memory_search', 'merge', 'message_list', 'message_send', 'sync', 'task_list', 'task_register', 'task_update']);
+    assert.deepEqual(tools.map(tool => tool.name).sort(), ['commit', 'decision_record', 'decision_request', 'impact_ack', 'inbox', 'memory_get', 'memory_publish', 'memory_search', 'merge', 'message_list', 'message_send', 'message_wait', 'sync', 'task_list', 'task_register', 'task_update']);
     assert.equal((await fetch(mcp.url)).status, 405);
   } finally {
     await mcp.close();
   }
 });
 
-test('mcp sync returns data only, with no coordination text', async () => {
+test('mcp sync returns data only, and hands over waiting messages', async () => {
   const {alice, bob} = await deliveredImpact();
+  const waiting = h.app.store.listMessagesForSession(bob.session.id, ['queued', 'delivered']).length;
   const mcp = await mcpSession(h.session(bob.session.id));
   try {
     const result = await mcp.call('sync');
     assert.equal(result.isError, false);
-    assert.doesNotMatch(result.text, /\[align\]/);
-    assert.doesNotMatch(result.text, /impact_ack|memory_get/);
     const data = JSON.parse(result.text);
+    // Apart from the messages themselves, sync adds no instructions of its own.
+    const own = JSON.stringify({...data, newMessages: undefined});
+    assert.doesNotMatch(own, /\[align\]/);
+    assert.doesNotMatch(own, /impact_ack|memory_get/);
     assert.equal(data.task.id, bob.task.id);
     assert.equal(data.impacts.length, 1);
-    assert.equal(data.inbox.length, 1);
+    assert.equal(data.newMessages.length, waiting);
+    assert.equal(h.app.store.listMessagesForSession(bob.session.id, ['queued', 'delivered']).length, 0);
     assert.equal(data.peers[0].handle, alice.session.handle);
     assert.deepEqual(data.peers[0].task.id, alice.task.id);
     assert.deepEqual(data.decisions, [{key: 'api-shape', kind: 'decision', title: 'api-shape title', version: 2}]);
@@ -1348,7 +1352,7 @@ test('mcp memory_publish reports version_conflict with current content as a fail
   }
 });
 
-test('mcp message_list moves only delivered messages to read', async () => {
+test('mcp message_list receives queued and delivered messages and marks them read', async () => {
   const alice = h.addSession('Alice');
   const bob = h.addSession('Bob', 'codex');
   const delivered = h.app.coordination.sendMessage(alice.session, {to: bob.session.id, kind: 'question', subject: 'one', body: 'b'});
@@ -1357,7 +1361,8 @@ test('mcp message_list moves only delivered messages to read', async () => {
   const mcp = await mcpSession(bob.session);
   try {
     const list = JSON.parse((await mcp.call('message_list')).text) as {id: string; state: string}[];
-    assert.deepEqual(list.map(message => [message.id, message.state]), [[delivered.id, 'read'], [queued.id, 'queued']]);
+    // A native terminal cannot be pushed to, so pulling the list is what delivers.
+    assert.deepEqual(list.map(message => [message.id, message.state]), [[delivered.id, 'read'], [queued.id, 'read']]);
   } finally {
     await mcp.close();
   }
