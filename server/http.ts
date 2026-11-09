@@ -4,6 +4,7 @@ import type {IncomingMessage, Server, ServerResponse} from 'node:http';
 import path from 'node:path';
 import {WebSocketServer} from 'ws';
 import {handleMcp} from './mcp.ts';
+import {joinAgent} from './join.ts';
 import type {App} from './contracts.ts';
 import type {ApiError} from '../shared/types.ts';
 
@@ -14,6 +15,7 @@ const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
 const VITE_ORIGINS = new Set(['http://localhost:5173', 'http://127.0.0.1:5173']);
 const SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(prompt|interrupt|items)$/;
 const MCP_ROUTE = /^\/mcp\/([^/]+)$/;
+const HOOK_ROUTE = /^\/api\/hook\/([^/]+)$/;
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -155,6 +157,25 @@ async function createSession(app: App, req: IncomingMessage, res: ServerResponse
   sendJson(res, 200, await app.sessions.create({developerId, agent, prompt}));
 }
 
+async function join(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readJson(req);
+  const agent = body.agent;
+  if (agent !== 'claude' && agent !== 'codex') throw new HttpError(400, 'agent must be claude or codex');
+  const text = (key: string) => (typeof body[key] === 'string' ? (body[key] as string) : '');
+  try {
+    sendJson(res, 200, await joinAgent(app, {
+      developer: requiredString(body, 'developer').trim(),
+      agent,
+      task: requiredString(body, 'task').trim(),
+      description: text('description'),
+      role: text('role'),
+    }));
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
   let relative: string;
   try {
@@ -197,6 +218,22 @@ async function handleRequest(app: App, req: IncomingMessage, res: ServerResponse
   }
 
   if (method === 'GET' && pathname === '/api/state') return sendJson(res, 200, app.bus.snapshot());
+  if (method === 'POST' && pathname === '/api/join') return join(app, req, res);
+  const hook = HOOK_ROUTE.exec(pathname);
+  if (method === 'GET' && hook) {
+    const session = app.store.getSessionByToken(hook[1]!);
+    if (!session) throw new HttpError(404, 'not found');
+    const queued = app.store.listMessagesForSession(session.id, ['queued', 'delivered']);
+    return sendJson(res, 200, {
+      handle: session.handle,
+      pending: queued.map(message => ({
+        id: message.id,
+        from: message.fromSessionId ? (app.store.getSession(message.fromSessionId)?.handle ?? 'align') : 'align',
+        kind: message.kind,
+        subject: message.subject,
+      })),
+    });
+  }
   if (method === 'POST' && pathname === '/api/project') return setProject(app, req, res);
   if (method === 'POST' && pathname === '/api/developers') return createDeveloper(app, req, res);
   if (method === 'POST' && pathname === '/api/sessions') return createSession(app, req, res);

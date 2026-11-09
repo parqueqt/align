@@ -1,123 +1,79 @@
 # Align — Product Spec
 
-Align is a functional multiplayer AI coding workspace that enables independent coding agents to collaborate on the same software project.
+**A shared memory and coordination layer for independent AI coding agents.**
 
-Core concept: **Visibility ≠ Collaboration.** Running multiple agents and observing their sessions does not guarantee that they can collaborate. The goal is to enable independently operated agents to understand each other's work, share knowledge, coordinate dependent tasks, and maintain consistency across a shared codebase.
+Core concept: **Parallel execution ≠ Collaboration.** Principle: **We don't replace coding agents. We make them work together.**
 
-## UI directive (from the product owner)
+User experience: *Install once. Keep coding in Claude Code or Codex. Your agents coordinate behind the scenes.*
 
-Bright and clean. No explanatory text or unnecessary text anywhere. As simple as possible.
+This supersedes the earlier standalone AI Coding Workspace direction. The managed chat UI and agent runners remain recoverable at git tag `workspace-ui-v0`.
 
-## 1. Real Coding Agent Integration
+## 1. Product architecture
 
-Support Claude Code and OpenAI Codex.
+A lightweight, independently usable CLI + MCP collaboration layer. Developers keep working in Claude Code and OpenAI Codex terminals. Align provides the infrastructure connecting them; it never replaces their native interfaces, and recreates no chat, streaming, or execution environment.
 
-- Fully functional agent chat interfaces.
-- Users send prompts, receive responses, and execute real coding tasks.
-- Parallel execution and independent agent sessions.
-- Display agent responses, tool activities, and execution progress.
-- Continued conversations within existing sessions.
-- Agents work on the same project using isolated working environments.
-- Each execution is clearly associated with its developer, agent, session, and task.
+## 2. CLI experience
 
-The system must use real coding agents rather than simulated responses.
+Developers can, with minimal configuration: initialize collaboration for an existing project; connect Claude Code and Codex; register participating agents and tasks; start and use the infrastructure; keep developing through normal terminal workflows; inspect status and activity when necessary. No web application is required for core functionality.
 
-## 2. Multiplayer Workspace
+## 3. Coordination engine (core differentiator)
 
-- Shared workspace for multiple developers on the same project.
-- Distinguish developers, agents, and sessions.
-- Each developer interacts with their own coding agent.
-- Relevant agent activities are visible to other participants.
-- Shared project awareness without requiring developers to use the same agent session.
-- Lightweight demonstration identity mechanism (no production authentication).
+Task awareness and registration; shared task dependencies; agent-to-agent messaging; shared context synchronization; change impact detection; coordination of dependent work; conflict detection and escalation; human decision handling; verification of coordination outcomes.
 
-## 3. Task Awareness and Dependency Tracking
+The engine determines when information needs to be shared, which agents are affected, and whether an issue can be resolved autonomously or needs human input. It avoids unnecessary coordination between unrelated tasks.
 
-- Register and update agent tasks.
-- Track task ownership and execution status.
-- Agents can discover other agents' tasks.
-- Associate tasks with relevant files, working directories, and Git worktrees.
-- Represent dependencies between tasks and shared project decisions.
-- Identify when changes made by one agent may affect another agent's work.
-- Make related, overlapping, or potentially conflicting work visible.
+## 4. Shared memory — GBrain
 
-Prioritize reliable coordination of known dependencies rather than complex autonomous dependency inference.
+GBrain is the shared memory across Claude Code and Codex sessions. Agents publish and retrieve architectural decisions, technical conventions, interface contracts, important implementation decisions, and shared project context. GBrain is the memory layer, not the entire coordination system.
 
-## 4. Shared Memory — GBrain
+## 5. Agent-to-agent communication
 
-Use GBrain as the shared agent memory system.
+Agents communicate about implementation details without developers relaying messages: requesting details of another agent's implementation, confirming interface or schema definitions, communicating changes to shared modules, resolving routine technical disagreements, coordinating dependent tasks, and requesting clarification about progress.
 
-- Claude Code and Codex access shared project knowledge.
-- Agents publish and retrieve technical decisions, architectural conventions, project rules, and relevant context.
-- Knowledge sharing across independent sessions.
-- Important memory updates are visible.
-- Agents retrieve relevant and up-to-date project information.
-- Avoid unnecessarily sharing complete conversation histories.
+Messages must be consumed and acted upon by the receiving agent. Storing a message is not successful communication. The system provides a reliable way for agents to check, receive, and process coordination messages during ongoing work.
 
-GBrain is the shared knowledge layer. Align decides how that knowledge supports coordination between agents.
+## 6. Human-in-the-loop decisions
 
-## 5. Agent-to-Agent Messaging
+There is no separate approval inbox. When a decision needs human judgment, the relevant agent asks its own developer directly in its existing Claude Code or Codex terminal conversation.
 
-- Send and receive messages between agents.
-- Request information or clarification.
-- Notify other agents about important changes.
-- Communicate decisions affecting related tasks.
-- Support coordination requests and responses.
-- Track message delivery and processing states.
-- Allow messages to influence actual coding behavior.
+Requires a human: conflicting explicit user requirements; important product or design decisions; significant architectural changes; changes overriding previously approved decisions; unresolved disagreements requiring human preference; high-risk or irreversible actions. Routine technical details are resolved autonomously between agents.
 
-Agent communication must support meaningful collaboration, not merely display messages.
+Human decisions are recorded and communicated to relevant agents, and important approved decisions are preserved in GBrain. The system must not assume an MCP server can inject messages or interactive approval prompts into a running session; the workflow must be reliable with what the supported agents actually provide. Only work dependent on an unresolved approval is blocked, where possible.
 
-## 6. Cross-Agent Coordination Engine (central differentiator)
+## 7. Git and worktrees
 
-- Maintain awareness of parallel tasks and their dependencies.
-- Recognize when a shared decision changes.
-- Identify agents whose tasks depend on the updated information.
-- Notify affected agents.
-- Allow agents to retrieve updated context and adapt their work.
-- Track acknowledgments and relevant coordination outcomes.
-- Reduce duplicated work, inconsistent implementations, and avoidable integration problems.
-- Help agents maintain alignment while working independently.
+Git remains the source-code version control and integration mechanism. Align supports agents in separate worktrees or independent working directories of the same project, and maintains the distinction between code synchronization (Git), shared knowledge (GBrain), and coordination (Align). No custom merge engine. The focus is identifying and addressing semantic inconsistencies before integration.
 
-The objective is to prevent avoidable semantic conflicts rather than automatically resolve all Git merge conflicts.
+## 8. Visibility (optional, lightweight)
 
-## 7. Functional Agent Chat UI
+Users can inspect active agents and tasks, agent-to-agent messages, shared context updates, coordination events, pending human decisions, and resolved coordination issues, through CLI output or a minimal viewer. Visualization never delays core coordination. UI directive for any viewer: bright, clean, no explanatory or unnecessary text, as simple as possible.
 
-- Real conversations with coding agents.
-- Prompt input and streamed responses.
-- Agent execution progress and relevant tool activity.
-- Session status and task information.
-- Continued interaction with existing sessions.
-- Clear distinction between user messages and agent-to-agent coordination messages.
-- Intuitive navigation between agent sessions.
+## 9. Constraints
 
-## 8. Collaboration Dashboard
+Single laptop. Orca ADE is a development environment only; the product is independent of it. Separate from Nabla (never modify it). No unnecessary cloud infrastructure or production authentication.
 
-Real-time dashboard showing: active developers and agents; current tasks and execution status; agent sessions and worktrees; relevant file modifications; task dependencies; shared memory changes; agent-to-agent messages; coordination events; potential inconsistencies; coordination outcomes.
+## 10. Priorities
 
-Prioritize clarity, usability, and visual understanding of cross-agent collaboration. Emphasize meaningful collaboration events rather than raw logs.
-
-## 9. Development Environment
-
-- Single laptop; independently usable outside Orca ADE.
-- Lightweight infrastructure appropriate for local execution.
-- Separate from Nabla; never modify Nabla's codebase.
-
-## 10. Scope
-
-Out of scope: demo video, presentation materials, full OAuth, production account management, billing, additional coding agents, automatic Git merge resolution, general-purpose orchestration, advanced autonomous dependency inference, unnecessary cloud infrastructure.
+1. Working Claude Code and Codex integration.
+2. CLI + MCP collaboration infrastructure.
+3. GBrain shared memory.
+4. Reliable agent-to-agent messaging.
+5. Task awareness and dependency tracking.
+6. Cross-agent coordination and change propagation.
+7. Human decision escalation through native agent conversations.
+8. Verification of actual coordination outcomes.
+9. Optional lightweight coordination visualization.
 
 ## 11. Definition of Done
 
-- Claude Code and Codex execute real coding tasks through the application.
-- Their sessions operate independently within the same project.
-- The system distinguishes developers and their respective agents.
-- Agent tasks and dependencies are visible and accessible.
-- Both agents use GBrain to share and retrieve project knowledge.
-- Agents exchange coordination messages.
-- Changes affecting dependent tasks are communicated to relevant agents.
-- An agent incorporates another agent's decision into its actual coding work.
-- Coordination events and outcomes are visible in the dashboard.
-- The integrated application is verified through real functional testing.
+- Claude Code and Codex operate independently using their native terminal interfaces.
+- Both agents connect to the same collaboration layer.
+- Their tasks and dependencies are discoverable.
+- Shared technical decisions can be stored and retrieved through GBrain.
+- Agents can exchange relevant messages and act on them.
+- One agent's important decision can influence another agent's ongoing coding work.
+- Important unresolved decisions can be escalated to the appropriate developer through the agent's native conversation.
+- Approved decisions can be shared with affected agents.
+- Actual changes in agent behavior or code can be verified.
 
-Stored messages or simulated activity are never proof of actual agent collaboration.
+Successful real-time coordination is never claimed when a message has only been queued.

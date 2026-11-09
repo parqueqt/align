@@ -97,6 +97,21 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
   };
   const authorName = (session: SessionRow) => `${developerName(app, session.developerId)} (${session.agent})`;
 
+  /** Native terminals cannot be pushed to, so agents pull: claiming marks queued messages delivered and read. */
+  function pull(session: SessionRow): AgentMessage[] {
+    const claimed = app.coordination.claimQueued(session.id)?.messageIds ?? [];
+    const delivered = app.store.listMessagesForSession(session.id, ['delivered']).map(message => message.id);
+    const ids = [...new Set([...claimed, ...delivered])];
+    if (ids.length > 0) app.coordination.markRead(ids);
+    return ids.map(id => app.store.getMessage(id)!).filter(Boolean);
+  }
+
+  function awaitingReply(session: SessionRow) {
+    return app.store.listMessagesForSession(session.id, ['read'])
+      .filter(message => message.requiresAction && (message.kind === 'question' || message.kind === 'request'))
+      .map(message => ({id: message.id, from: handleOf(app, message.fromSessionId), subject: message.subject}));
+  }
+
   async function recordCommit(session: SessionRow, sha: string, files: string[]): Promise<void> {
     app.store.addActivity({type: 'commit', actorSessionId: session.id, taskId: session.taskId, subject: sha, data: {sha, files}});
     app.store.updateSession(session.id, {headSha: sha});
@@ -114,17 +129,19 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
     const session = self();
     const task = session.taskId ? app.store.getTask(session.taskId) : null;
     return data({
+      you: {handle: session.handle, agent: session.agent, developer: developerName(app, session.developerId), branch: session.branch},
       task: task && taskView(app, task),
       impacts: app.store.listOpenImpacts(session.id),
-      inbox: app.store.listMessagesForSession(session.id, ['queued', 'delivered', 'read']).map(message => messageView(app, message)),
+      newMessages: pull(session).map(message => messageView(app, message)),
+      awaitingYourReply: awaitingReply(session),
       peers: app.store.listSessions().filter(peer => peer.id !== session.id).map(peer => {
         const peerTask = peer.taskId ? app.store.getTask(peer.taskId) : null;
         return {
           handle: peer.handle,
           developer: developerName(app, peer.developerId),
           agent: peer.agent,
-          status: peer.status,
-          task: peerTask && {id: peerTask.id, title: peerTask.title, status: peerTask.status},
+          active: Date.now() - peer.lastActiveAt < 180_000,
+          task: peerTask && {id: peerTask.id, title: peerTask.title, status: peerTask.status, note: peerTask.note, files: peerTask.files},
           branch: peer.branch,
         };
       }),
@@ -206,6 +223,9 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
     const read = await app.memory.get(self(), args.key);
     if (!read) throw new Error(`No memory entry for key "${args.key}"`);
     const {entry, previous} = read;
+    const reader = self();
+    app.store.addActivity({type: 'memory_read', actorSessionId: reader.id, taskId: reader.taskId, subject: entry.key, data: {version: entry.version}});
+    app.bus.touch();
     return data({
       key: entry.key,
       kind: entry.kind,
@@ -252,13 +272,37 @@ function registerTools(server: McpServer, app: App, sessionId: string): void {
       replyToId: args.reply_to,
       requiresAction: args.requires_action,
     });
-    return data({id: message.id, state: message.state});
+    return data({id: message.id, to: handleOf(app, message.toSessionId), state: message.state});
   }));
 
-  server.registerTool('message_list', {description: 'This session\'s inbox.', inputSchema: {}}, guarded(() => {
+  server.registerTool('inbox', {description: 'Receive new messages from other agents. Call after every few steps.', inputSchema: {}}, guarded(() => {
     const session = self();
-    const delivered = app.store.listMessagesForSession(session.id, ['delivered']).map(message => message.id);
-    if (delivered.length > 0) app.coordination.markRead(delivered);
+    return data({newMessages: pull(session).map(message => messageView(app, message)), awaitingYourReply: awaitingReply(session)});
+  }));
+
+  server.registerTool('message_wait', {
+    description: 'Wait for new messages (for example the answer to your question). Returns as soon as one arrives.',
+    inputSchema: {
+      reply_to: z.string().min(1).optional().describe('Keep waiting until a reply to this message id arrives.'),
+      timeout_seconds: z.number().int().min(1).max(280).optional(),
+    },
+  }, guarded(async args => {
+    const session = self();
+    const deadline = Date.now() + (args.timeout_seconds ?? 240) * 1000;
+    const received: AgentMessage[] = [];
+    for (;;) {
+      received.push(...pull(session));
+      const done = args.reply_to ? received.some(message => message.replyToId === args.reply_to) : received.length > 0;
+      if (done || Date.now() >= deadline) {
+        return data({newMessages: received.map(message => messageView(app, message)), timedOut: !done, awaitingYourReply: awaitingReply(session)});
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }));
+
+  server.registerTool('message_list', {description: 'Full message history of this session.', inputSchema: {}}, guarded(() => {
+    const session = self();
+    pull(session);
     return data(app.store.listMessagesForSession(session.id).map(message => messageView(app, message)));
   }));
 
@@ -301,6 +345,7 @@ export const handleMcp: McpHandler = async (app, token, req, res) => {
   if (req.method !== 'POST') return reply(405, 'method not allowed', {Allow: 'POST'});
   const session = app.store.getSessionByToken(token);
   if (!session) return reply(404, 'not found');
+  app.store.updateSession(session.id, {lastActiveAt: Date.now()});
 
   const server = new McpServer({name: 'align', version: '0.1.0'});
   registerTools(server, app, session.id);

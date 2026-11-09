@@ -167,6 +167,7 @@ export type ActivityType =
   | 'task_done'
   | 'memory_published'
   | 'memory_updated'
+  | 'memory_read'
   | 'publish_rejected'
   | 'impact_created'
   | 'impact_resolved'
