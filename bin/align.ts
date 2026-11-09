@@ -43,6 +43,7 @@ async function api<T>(method: string, route: string, body?: unknown): Promise<T>
 }
 
 function fail(message: string): never {
+  try { writeFileSync(path.join(homedir(), '.align', `error-${command}.log`), `${new Date().toISOString()} ${message}\n`, {flag: 'a'}); } catch {}
   console.error(`align: ${message}`);
   process.exit(1);
 }
@@ -231,9 +232,62 @@ async function run(args: string[]): Promise<void> {
   // A session started from inside another Claude Code session inherits its child-session settings
   // (for example, no transcript saving). Start every agent as a top-level session.
   for (const key of Object.keys(env)) if (key === 'CLAUDECODE' || (key.startsWith('CLAUDE_CODE_') && key !== 'CLAUDE_CODE_GIT_BASH_PATH')) delete env[key];
+  // Hooks only fire on the agent's own activity, so nothing reaches an agent sitting idle at its prompt.
+  // The terminal is relayed through a PTY and waiting messages are typed in like a teammate would.
+  if (process.stdin.isTTY && opts.relay !== 'false') return relay(exe, argv, dir, env, info as {mcpUrl: string; token?: string; server?: string});
   const child = spawn(exe, argv, {cwd: dir, stdio: 'inherit', env});
   child.on('exit', code => process.exit(code ?? 0));
   child.on('error', error => fail(`${exe}: ${error.message}`));
+}
+
+interface Pending {
+  id: string;
+  from: string;
+  kind: string;
+  subject: string;
+}
+
+/** Runs the agent CLI in a pseudo-terminal that passes the screen and keyboard straight through. */
+async function relay(exe: string, argv: string[], dir: string, env: NodeJS.ProcessEnv, info: {token?: string; server?: string}): Promise<void> {
+  const {createRequire} = await import('node:module');
+  const pty = createRequire(import.meta.url)('node-pty') as typeof import('node-pty');
+  const term = pty.spawn(exe, argv, {name: 'xterm-256color', cols: process.stdout.columns || 120, rows: process.stdout.rows || 40, cwd: dir, env: env as Record<string, string>});
+  let lastOutput = Date.now();
+  let lastKey = 0;
+  const started = Date.now();
+  let tail = '';
+  term.onData(data => { lastOutput = Date.now(); tail = (tail + data).slice(-4000); process.stdout.write(data); });
+  term.onExit(({exitCode}) => {
+    if (Date.now() - started < 10_000) {
+      try { writeFileSync(path.join(homedir(), '.align', 'error-relay.log'), `${new Date().toISOString()} ${exe} exited ${exitCode} after ${Date.now() - started}ms\n${tail}\n`, {flag: 'a'}); } catch {}
+    }
+    process.exit(exitCode);
+  });
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.on('data', data => { lastKey = Date.now(); term.write(data.toString('utf8')); });
+  process.stdout.on('resize', () => term.resize(process.stdout.columns, process.stdout.rows));
+
+  const delivered = new Map<string, number>();
+  const url = `${info.server ?? SERVER}/api/hook/${info.token}`;
+  setInterval(async () => {
+    // Type only while the agent is quiet and the developer is not typing.
+    if (Date.now() - lastOutput < 2500 || Date.now() - lastKey < 4000) return;
+    let pending: Pending[];
+    try {
+      pending = ((await (await fetch(url, {signal: AbortSignal.timeout(3000)})).json()) as {pending: Pending[]}).pending;
+    } catch {
+      return;
+    }
+    // A message the agent has not pulled within a minute is announced again.
+    const fresh = pending.filter(m => Date.now() - (delivered.get(m.id) ?? 0) > 60_000);
+    if (fresh.length === 0) return;
+    for (const m of fresh) delivered.set(m.id, Date.now());
+    const what = fresh.map(m => `${m.from} (${m.kind}): ${m.subject}`).join('; ');
+    term.write(`[align] New message from ${what}. Call align.inbox now and handle it.`);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    term.write('\r');
+  }, 2000);
 }
 
 const AGENT_LABEL: Record<string, string> = {claude: 'Claude Code', codex: 'Codex'};
@@ -389,6 +443,15 @@ async function demo(args: string[]): Promise<void> {
   if (opts.launch !== 'false') await launch([a.handle, b.handle, ...(opts.idle === 'true' ? ['--idle'] : [])]);
   writeFileSync(path.join(path.dirname(target), 'last-demo.json'), JSON.stringify({repo: target, claude: a, codex: b}, null, 2));
 }
+
+// Windows opened by `launch` close on failure, so keep the reason somewhere readable.
+const logFailure = (error: unknown) => {
+  try { writeFileSync(path.join(homedir(), '.align', `error-${command}.log`), `${new Date().toISOString()} ${error instanceof Error ? error.stack : String(error)}\n`, {flag: 'a'}); } catch {}
+  console.error(error);
+  process.exit(1);
+};
+process.on('uncaughtException', logFailure);
+process.on('unhandledRejection', logFailure);
 
 const commands: Record<string, (args: string[]) => Promise<unknown>> = {serve, init, join, run, launch, status, watch, demo, memory};
 const handler = commands[command];
