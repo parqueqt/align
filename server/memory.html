@@ -13,17 +13,28 @@
   header span { color: var(--muted); }
   header input { margin-left: auto; width: 280px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; outline: none; }
   header input:focus { border-color: #ccc; }
-  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; height: calc(100vh - 53px); }
+  nav { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 24px; border-bottom: 1px solid var(--line); }
+  nav .group { display: flex; gap: 6px; align-items: center; }
+  .chip { border: 1px solid var(--line); background: #fff; border-radius: 99px; padding: 2px 10px; font: inherit; font-size: 12px; color: #555; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+  .chip:hover { background: var(--soft); }
+  .chip.on { background: var(--fg); border-color: var(--fg); color: #fff; }
+  .chip i { font-style: normal; color: var(--muted); }
+  .chip.on i { color: #bbb; }
+  main { display: grid; grid-template-columns: minmax(280px, 400px) 1fr; height: calc(100vh - 96px); }
   #list { border-right: 1px solid var(--line); overflow: auto; }
-  .row { padding: 12px 24px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .section { padding: 14px 24px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+  .row { padding: 10px 24px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .row:hover { background: var(--soft); }
   .row.on { background: #fff6ef; }
+  .row.fresh { animation: fresh 2.4s ease-out; }
+  @keyframes fresh { from { background: #ffe3cc; } to { background: transparent; } }
   .key { font-weight: 600; word-break: break-all; }
-  .meta { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .title { color: #444; font-size: 13px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .pill { font-size: 11px; padding: 0 6px; border-radius: 99px; background: var(--soft); color: #555; }
   .pill.pending { background: #fff1e6; color: #b34700; }
   .pill.approved { background: #eaf7ee; color: #1f7a3d; }
+  .pill.conflict { background: #fde8e8; color: #b42318; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .claude { background: var(--claude); } .codex { background: var(--codex); }
   #detail { overflow: auto; padding: 28px 36px; }
@@ -32,33 +43,60 @@
   h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
   .line { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 13px; }
   .line time { color: var(--muted); margin-left: auto; font-size: 12px; }
-  mark { background: #ffe3cc; }
 </style>
 </head>
 <body>
 <header><b>Memory</b><span id="project"></span><input id="q" placeholder="Search" autocomplete="off"></header>
+<nav><div class="group" id="kinds"></div><div class="group" id="statuses"></div><div class="group" id="authors"></div></nav>
 <main><section id="list"></section><section id="detail"></section></main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
 const when = ms => new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
 const who = a => a ? `<span class="dot ${esc(a.agent)}"></span>${esc(a.developer ? a.developer + ' · ' : '')}${esc(a.handle)}` : 'GBrain';
-const status = t => /^PENDING/.test(t) ? '<span class="pill pending">pending</span>' : /^APPROVED/.test(t) ? '<span class="pill approved">approved</span>' : '';
-let selected = null, query = '';
+const KINDS = ['decision', 'convention', 'rule', 'context'];
+const LABEL = {decision: 'Decisions', convention: 'Conventions', rule: 'Rules', context: 'Context'};
+const statusOf = t => /^CONFLICT/.test(t) ? 'conflict' : /^PENDING/.test(t) ? 'pending' : /^APPROVED/.test(t) ? 'approved' : null;
+const pill = s => s ? `<span class="pill ${s}">${s}</span>` : '';
+let selected = null, query = '', entries = [], seen = new Set(), first = true;
+const filter = {kind: null, status: null, author: null};
+
+function chips(el, field, values, count) {
+  el.innerHTML = [[null, 'All'], ...values].map(([v, label]) =>
+    `<button class="chip${filter[field] === v ? ' on' : ''}" data-v="${esc(v ?? '')}">${esc(label)}${v ? `<i>${count(v)}</i>` : ''}</button>`).join('');
+  for (const b of el.children) b.onclick = () => { filter[field] = b.dataset.v || null; render(); };
+}
+
+function render() {
+  const authors = [...new Map(entries.filter(e => e.author).map(e => [e.author.developer ?? e.author.handle, e.author])).entries()];
+  const authorOf = e => e.author ? (e.author.developer ?? e.author.handle) : null;
+  chips($('kinds'), 'kind', KINDS.filter(k => entries.some(e => e.kind === k)).map(k => [k, LABEL[k]]), k => entries.filter(e => e.kind === k).length);
+  chips($('statuses'), 'status', ['pending', 'conflict', 'approved'].filter(s => entries.some(e => statusOf(e.title) === s)).map(s => [s, s[0].toUpperCase() + s.slice(1)]), s => entries.filter(e => statusOf(e.title) === s).length);
+  chips($('authors'), 'author', authors.map(([name]) => [name, name]), n => entries.filter(e => authorOf(e) === n).length);
+  const shown = entries.filter(e => (!filter.kind || e.kind === filter.kind) && (!filter.status || statusOf(e.title) === filter.status) && (!filter.author || authorOf(e) === filter.author));
+  $('list').innerHTML = KINDS.map(kind => {
+    const rows = shown.filter(e => e.kind === kind);
+    if (!rows.length) return '';
+    return `<div class="section"><span>${LABEL[kind]}</span><span>${rows.length}</span></div>` + rows.map(e => `
+      <div class="row${e.key === selected ? ' on' : ''}${!first && !seen.has(e.key + ':' + e.version) ? ' fresh' : ''}" data-key="${esc(e.key)}">
+        <div class="key">${esc(e.key)}</div>
+        <div class="meta">v${e.version}${pill(statusOf(e.title))}<span>${who(e.author)}</span><span>${when(e.updatedAt)}</span></div>
+        <div class="title">${e.snippet ? esc(e.snippet) : esc(e.title.replace(/^(PENDING|APPROVED|CONFLICT)[^:]*:\s*/, ''))}</div>
+      </div>`).join('');
+  }).join('');
+  for (const e of entries) seen.add(e.key + ':' + e.version);
+  first = false;
+  for (const row of $('list').querySelectorAll('.row')) row.onclick = () => { selected = row.dataset.key; render(); loadDetail(); };
+}
 
 async function loadList() {
   const r = await fetch('/api/memory' + (query ? '?q=' + encodeURIComponent(query) : ''));
   if (!r.ok) return;
   const data = await r.json();
   $('project').textContent = data.project ?? '';
-  $('list').innerHTML = data.entries.map(e => `
-    <div class="row${e.key === selected ? ' on' : ''}" data-key="${esc(e.key)}">
-      <div class="key">${esc(e.key)}</div>
-      <div class="meta"><span class="pill">${esc(e.kind)}</span>v${e.version}${status(e.title)}<span>${who(e.author)}</span><span>${when(e.updatedAt)}</span></div>
-      <div class="title">${e.snippet ? esc(e.snippet) : esc(e.title)}</div>
-    </div>`).join('');
-  for (const row of $('list').children) row.onclick = () => { selected = row.dataset.key; loadList(); loadDetail(); };
-  if (!selected && data.entries[0]) { selected = data.entries[0].key; loadDetail(); loadList(); }
+  entries = data.entries;
+  if (!selected && entries[0]) { selected = entries[0].key; loadDetail(); }
+  render();
 }
 
 async function loadDetail() {
@@ -68,16 +106,16 @@ async function loadDetail() {
   const e = await r.json();
   $('detail').innerHTML = `
     <h2>${esc(e.title)}</h2>
-    <div class="meta"><span class="pill">${esc(e.kind)}</span>${esc(e.key)} · v${e.version} · ${esc(e.gbrainSlug)}</div>
+    <div class="meta"><span class="pill">${esc(e.kind)}</span>${pill(statusOf(e.title))}${esc(e.key)} · v${e.version} · ${esc(e.gbrainSlug)}</div>
     <pre>${esc(e.body)}</pre>
-    <h3>History</h3>${e.history.map(h => `<div class="line">v${h.version}<span>${who(h.author)}</span><time>${when(h.createdAt)}</time></div>`).join('')}
+    <h3>History</h3>${e.history.map(h => `<div class="line">v${h.version}${pill(statusOf(h.title))}<span>${who(h.author)}</span><time>${when(h.createdAt)}</time></div>`).join('')}
     ${e.readers.length ? `<h3>Read by</h3>${e.readers.map(x => `<div class="line">${who(x)}<span>v${esc(x.version)}</span><time>${when(x.at)}</time></div>`).join('')}` : ''}`;
 }
 
 let timer;
 $('q').oninput = () => { clearTimeout(timer); timer = setTimeout(() => { query = $('q').value.trim(); loadList(); }, 250); };
 loadList();
-setInterval(() => { loadList(); loadDetail(); }, 4000);
+setInterval(() => { loadList(); loadDetail(); }, 3000);
 </script>
 </body>
 </html>
